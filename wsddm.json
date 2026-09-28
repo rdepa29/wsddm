@@ -1,9 +1,9 @@
 {
-    "version": "0.1.0",
+    "version": "0.0.1",
     "description": "SDDM-style lock screen for Windows, caelestia-locklike theme",
     "homepage": "https://github.com/rdepa29/wsddm",
     "license": "GPL-3.0",
-    "url": "https://github.com/rdepa29/wsddm/releases/download/v0.1.0/wsddm-win-x64.zip",
+    "url": "https://github.com/rdepa29/wsddm/releases/download/v0.0.1/wsddm-win-x64.zip",
     "hash": "63cab03d02a91933d6c44e9ff17c6513fb45e0078de532601752ba4bf70addd5",
     "bin": [
         "wsddm.exe"
