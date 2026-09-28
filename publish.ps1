@@ -12,7 +12,14 @@ New-Item -ItemType Directory -Path $staging -Force | Out-Null
 
 Write-Host '[wsddm] publishing (self-contained, single file)' -ForegroundColor Cyan
 
-dotnet publish (Join-Path $root 'src\Wsddm\Wsddm.csproj') `
+# scoop's dotnet-sdk shim may not be on PATH until the shell is restarted
+$dotnet = (Get-Command dotnet -ErrorAction SilentlyContinue).Source
+if (-not $dotnet) {
+    $dotnet = "$env:USERPROFILE\scoop\apps\dotnet-sdk\current\dotnet.exe"
+    if (-not (Test-Path $dotnet)) { throw 'dotnet SDK not found (scoop install dotnet-sdk)' }
+}
+
+& $dotnet publish (Join-Path $root 'src\Wsddm\Wsddm.csproj') `
     -c Release -r win-x64 --self-contained `
     -p:PublishSingleFile=true `
     -p:IncludeNativeLibrariesForSelfExtract=true `

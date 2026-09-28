@@ -4,8 +4,7 @@
     "homepage": "https://github.com/rdepa29/wsddm",
     "license": "GPL-3.0",
     "url": "https://github.com/rdepa29/wsddm/releases/download/v0.1.0/wsddm-win-x64.zip",
-    "hash": "",
-    "extractdir": "wsddm",
+    "hash": "232745db21fb538291a058492a8571aae57c092992cc43fcd857afea28dbc4bd",
     "bin": [
         "wsddm.exe"
     ],
@@ -14,7 +13,7 @@
     },
     "autoupdate": {
         "url": "https://github.com/rdepa29/wsddm/releases/download/v$version/wsddm-win-x64.zip",
-        "hash": ""
+        "hash": "232745db21fb538291a058492a8571aae57c092992cc43fcd857afea28dbc4bd"
     },
     "notes": [
         "Launch it, then use the tray icon or Win+Shift+L to lock.",
