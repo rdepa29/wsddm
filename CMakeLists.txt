@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Quick)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Quick Widgets)
 
 qt_standard_project_setup(REQUIRES 6.5)
 
@@ -66,7 +66,7 @@ qt_add_qml_module(wsddm
         qml/assets/google-sans-flex/GoogleSansFlex.ttf
 )
 
-target_link_libraries(wsddm PRIVATE Qt6::Core Qt6::Gui Qt6::Quick)
+target_link_libraries(wsddm PRIVATE Qt6::Core Qt6::Gui Qt6::Quick Qt6::Widgets)
 
 # WIN32_EXECUTABLE is set via the WIN32 argument above, so the CLI commands
 # (--set-password, --help) attach to the parent console the same way the C# build did.
