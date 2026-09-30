@@ -1,6 +1,9 @@
-bin/
-obj/
+build/
 dist/
 *.user
 .vs/
 *.pdb
+
+# The theme's background is the user's own wallpaper, captured at runtime. It is
+# generated, personal, and far too large to keep in the repository.
+qml/assets/background
