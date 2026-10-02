@@ -1,8 +1,8 @@
 #include <QAbstractNativeEventFilter>
 #include <QApplication>
-#include <QCommandLineParser>
 #include <QDir>
 #include <QFileInfo>
+#include <QFontDatabase>
 #include <QIcon>
 #include <QMenu>
 #include <QPainter>
@@ -17,13 +17,27 @@
 #include <QTimer>
 
 #include <functional>
+#include <cstdio>
+#include <utility>
 
+#include "Config.h"
 #include "Log.h"
+#include "PasswordStore.h"
 #include "Sddm.h"
+#include "SessionModel.h"
 #include "ThemeConfig.h"
 #include "UserModel.h"
 
 #include <windows.h>
+
+// CLI entry helpers; defined below, forward-declared so their mutually-referencing
+// implementations can stay in a readable order.
+bool argvHas(int argc, char *argv[], const char *name);
+bool bindConsole();
+QByteArray fgetsLine();
+QString readHidden(const QByteArray &prompt);
+void writeUsage();
+int runCli(int argc, char *argv[]);
 
 namespace {
 /// The theme's authored canvas, matching Main.qml's root width/height.
@@ -153,10 +167,260 @@ QIcon buildTrayIcon()
 }
 } // namespace
 
+/// Whether an argument (case-insensitive name) appears on the command line.
+bool argvHas(int argc, char *argv[], const char *name)
+{
+    for (int i = 1; i < argc; ++i) {
+        const QString arg = QString::fromLocal8Bit(argv[i]).trimmed();
+        if (arg.compare(QString::fromLatin1("--") + QString::fromLatin1(name),
+                        Qt::CaseInsensitive) == 0)
+            return true;
+    }
+    return false;
+}
+
+/// dBinds the standard streams for a console-less WIN32 GUI process, mirroring the C#
+/// NativeConsole.Bind. Returns false when there is nowhere to write at all.
+bool bindConsole()
+{
+    const bool attached = AttachConsole(ATTACH_PARENT_PROCESS) != FALSE;
+    if (!attached)
+        AllocConsole();
+
+    // Keep whatever handle the parent gave us when there is one (a pipe or a file), so
+    // `wsddm --version | ...` still works; only missing handles fall back to the console.
+    bool ok = false;
+    for (const auto &[kind, name] : {std::pair{DWORD(STD_OUTPUT_HANDLE), "CONOUT$"},
+                                     std::pair{DWORD(STD_ERROR_HANDLE), "CONOUT$"},
+                                     std::pair{DWORD(STD_INPUT_HANDLE), "CONIN$"}}) {
+        HANDLE handle = GetStdHandle(kind);
+        if (handle == INVALID_HANDLE_VALUE || handle == nullptr) {
+            handle = CreateFileA(name, kind == STD_INPUT_HANDLE ? GENERIC_READ : GENERIC_WRITE,
+                                 FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                                 0, nullptr);
+            if (handle != INVALID_HANDLE_VALUE && handle != nullptr)
+                SetStdHandle(kind, handle);
+        }
+        if (handle != INVALID_HANDLE_VALUE && handle != nullptr)
+            ok = true;
+    }
+
+    return attached || ok;
+}
+
+/// Reads a password without echoing it, or a plain line when stdin is redirected (a pipe
+/// cannot suppress echo at the OS level). Returns null on Escape/EOF.
+QString readHidden(const QByteArray &prompt)
+{
+    const QByteArray bell = "\r" + prompt;
+
+    HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD consoleMode = 0;
+    const bool isConsole = GetConsoleMode(input, &consoleMode) != FALSE;
+
+    std::fputs(bell.constData(), stdout);
+    std::fflush(stdout);
+
+    if (isConsole) {
+        // With echo disabled, ReadConsole still blocks until Enter and lets the user edit
+        // the line; the returned buffer is the final text with the CRLF stripped.
+        SetConsoleMode(input, consoleMode & ~ENABLE_ECHO_INPUT);
+
+        wchar_t buffer[512];
+        DWORD read = 0;
+        const BOOL got = ReadConsoleW(input, buffer, sizeof(buffer) / sizeof(buffer[0]) - 1,
+                                      &read, nullptr);
+        SetConsoleMode(input, consoleMode);
+
+        std::fputc('\n', stdout);
+        std::fflush(stdout);
+
+        if (!got)
+            return {};
+
+        while (read > 0 && (buffer[read - 1] == L'\r' || buffer[read - 1] == L'\n'))
+            --read;
+        return QString::fromWCharArray(buffer, static_cast<int>(read));
+    }
+
+    // Redirected stdin: the caller's pipe is the only source, and it cannot be hidden.
+    QByteArray line = fgetsLine();
+    std::fputc('\n', stdout);
+    std::fflush(stdout);
+    return QString::fromUtf8(line);
+}
+
+/// Reads one UTF-8 line from stdin (used for piped passwords in the redirected case).
+QByteArray fgetsLine()
+{
+    QByteArray line;
+    int c;
+    while ((c = std::fgetc(stdin)) != EOF && c != '\n')
+        line.append(static_cast<char>(c));
+    return line;
+}
+
+/// Writes the usage reference, the same one the C# build printed.
+void writeUsage()
+{
+    std::fputs("\n"
+               "wsddm 0.0.2 - Windows desktop privacy overlay (caelestia locklike)\n"
+               "\n"
+               "Usage:\n"
+               "  wsddm                    Start in the tray (default when run with no options)\n"
+               "  wsddm --lock             Start in the tray and show the lock screen immediately\n"
+               "  wsddm --set-password     Set or replace the unlock password, then exit\n"
+               "  wsddm --clear-password   Remove the stored unlock password, then exit\n"
+               "  wsddm --version          Print the version, then exit\n"
+               "  wsddm --help             Print this help, then exit\n"
+               "\n"
+               "Passwords:\n"
+               "  Microsoft accounts cannot be checked through Windows, because the local\n"
+               "  account store holds an opaque credential rather than the account password.\n"
+               "  For those, run --set-password and wsddm checks the secret itself, using a\n"
+               "  salted, iterated hash stored under PasswordHash in the config file.\n"
+               "  Local accounts can use the Windows check instead by setting\n"
+               "  PasswordCheckMode to \"os\" in the config file.\n",
+               stdout);
+}
+
+/// Handles the CLI entry points; returns >= 0 when the argument was a CLI command that has
+/// been fully dealt with (and that is the process exit code), or -1 to start the tray app.
+int runCli(int argc, char *argv[])
+{
+    if (argc < 2)
+        return -1;
+
+    // --lock belongs to the tray app itself (it just asks it to raise the screen via the
+    // named event), so it must pass through to main() rather than be treated as a standalone
+    // command or an unknown option.
+    const bool lock = argvHas(argc, argv, "lock");
+    const bool set = argvHas(argc, argv, "set-password");
+    const bool clear = argvHas(argc, argv, "clear-password");
+    const bool help = argvHas(argc, argv, "help") || argvHas(argc, argv, "h")
+        || argvHas(argc, argv, "?");
+    const bool version = argvHas(argc, argv, "version");
+
+    if (!set && !clear && !help && !version && !lock) {
+        // An unrecognised option is a mistake worth reporting, not something to silently
+        // swallow by starting a tray app in the background.
+        for (int i = 1; i < argc; ++i) {
+            if (argv[i][0] == '-' || argv[i][0] == '/') {
+                bindConsole();
+                std::fprintf(stderr, "wsddm: unknown option: %s\n", argv[i]);
+                writeUsage();
+                return 2;
+            }
+        }
+        return -1;
+    }
+
+    if (lock)
+        return -1; // let main() create the mutex/event so a second instance signals the first
+
+    if (!bindConsole()) {
+        // No console and no piped handle: there is nowhere to report failure, but the
+        // command still ran far enough to know it was requested. Exit silently.
+        return 0;
+    }
+
+    if (help) {
+        writeUsage();
+        return 0;
+    }
+
+    if (version) {
+        std::fputs("wsddm 0.0.2\n", stdout);
+        return 0;
+    }
+
+    if (set) {
+        std::fputs("wsddm unlock password\n\n", stdout);
+        if (PasswordStore::hasVerifier())
+            std::fputs("  A password is already set. This replaces it.\n", stdout);
+
+        const QString mode = Config::load()
+                                 .value(QStringLiteral("PasswordCheckMode"))
+                                 .toString(QStringLiteral("auto"))
+                                 .trimmed()
+                                 .toLower();
+        if (mode == QLatin1String("os")) {
+            std::fputs("  Note: PasswordCheckMode is \"os\", which checks the Windows account\n"
+                       "  instead, so this password would not be used. Edit config.json and set\n"
+                       "  PasswordCheckMode to \"auto\" or \"local\" first.\n",
+                       stdout);
+        }
+
+        const QString first = readHidden("New password (min 8 characters): ");
+        if (first.isNull()) {
+            std::fputs("Cancelled. Nothing changed.\n", stdout);
+            return 1;
+        }
+
+        const QString second = readHidden("Confirm: ");
+        if (second.isNull()) {
+            std::fputs("Cancelled. Nothing changed.\n", stdout);
+            return 1;
+        }
+
+        if (first != second) {
+            std::fputs("The two entries do not match. Nothing changed.\n", stderr);
+            return 1;
+        }
+
+        if (!PasswordStore::isAcceptable(first)) {
+            std::fputs("Password must be at least 8 characters. Nothing changed.\n", stderr);
+            return 1;
+        }
+
+        QString error;
+        if (!PasswordStore::set(first, &error)) {
+            std::fprintf(stderr, "Failed to save: %s\n", qPrintable(error));
+            return 1;
+        }
+
+        qInfo("wsddm: password verifier saved from cli");
+        std::fputs("\nSaved a hash of it. The password itself was not stored.\n", stdout);
+        return 0;
+    }
+
+    if (clear) {
+        if (!PasswordStore::hasVerifier()) {
+            std::fputs("No password is set, so there is nothing to clear.\n", stdout);
+            return 0;
+        }
+
+        PasswordStore::clear();
+        qInfo("wsddm: password verifier cleared from cli");
+        std::fputs("Cleared. Unlocking now falls back to the Windows account check.\n", stdout);
+        return 0;
+    }
+
+    return -1;
+}
+
 int main(int argc, char *argv[])
 {
     // Installed before anything else so QML parse errors during setSource are captured.
     Log::install();
+
+    // The locklike theme renders its glyphs (power, reboot, chevrons, widgets) with the
+    // "Material Symbols Rounded" family. Bundling it makes the icons appear as intended
+    // instead of the tofu boxes the system fallback shows for those PUA codepoints.
+    const int fontId = QFontDatabase::addApplicationFont(
+        QStringLiteral(":/qt/qml/wsddm/qml/assets/material-symbols/MaterialSymbolsRounded.ttf"));
+    if (fontId < 0)
+        qWarning("wsddm: Material Symbols Rounded font failed to load; theme icons may be missing");
+    else
+        Q_UNUSED(QFontDatabase::applicationFontFamilies(fontId).value(0))
+
+    // CLI commands are handled before the single-instance mutex so --set-password keeps
+    // working while the tray app is already running, exactly like the C# build.
+    {
+        const int cliResult = runCli(argc, argv);
+        if (cliResult >= 0)
+            return cliResult;
+    }
 
     // The theme customises the internals of ScrollBar and ComboBox, which Qt Quick
     // Controls' native Windows style refuses. Upstream SDDM runs with the Basic style for
@@ -174,16 +438,7 @@ int main(int argc, char *argv[])
     // locked. Closing (or never showing) it must not tear down the tray process.
     app.setQuitOnLastWindowClosed(false);
 
-    QCommandLineParser parser;
-    parser.setApplicationDescription(
-        QStringLiteral("Windows desktop privacy overlay (caelestia locklike)"));
-    parser.addHelpOption();
-    parser.addVersionOption();
-    QCommandLineOption lockOption(QStringLiteral("lock"),
-        QStringLiteral("Show the lock screen immediately instead of waiting for the tray."));
-    parser.addOption(lockOption);
-    parser.process(app);
-    const bool lockNowRequested = parser.isSet(lockOption);
+    const bool lockNowRequested = argvHas(argc, argv, "lock");
 
     // One process at a time. A second launch with --lock simply raises the screen in the
     // instance that is already sitting in the tray; anything else just exits.
@@ -208,6 +463,7 @@ int main(int argc, char *argv[])
 
     Sddm sddm;
     UserModel users;
+    SessionModel sessions;
 
     // The theme's root object is a Rectangle, not a Window, because under SDDM it is
     // placed inside a window the greeter owns. ThemedView (a QQuickView) provides that
@@ -219,8 +475,9 @@ int main(int argc, char *argv[])
     view.rootContext()->setContextProperty(QStringLiteral("config"), &config);
     view.rootContext()->setContextProperty(QStringLiteral("sddm"), &sddm);
     view.rootContext()->setContextProperty(QStringLiteral("userModel"), &users);
-    // The theme guards this one with a null check, so a null model is a supported state.
-    view.rootContext()->setContextProperty(QStringLiteral("sessionModel"), nullptr);
+    // A Windows lock overlay has no sessions to switch to; the theme gets one placeholder
+    // entry so its picker's component-loading code has an array to index into.
+    view.rootContext()->setContextProperty(QStringLiteral("sessionModel"), &sessions);
 
     // The theme uses relative imports ("components", "widgets"), so it is loaded from
     // the bundled qml/ tree rather than as an imported QML module. qt_add_qml_module
@@ -273,15 +530,16 @@ int main(int argc, char *argv[])
         SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED);
     };
 
-    // The theme emits this on a correct password (and on a power/reboot click). Drop the
-    // overlay and let the display go back to its own power management.
+    // On a correct password the theme plays its exit animation, then calls
+    // sddm.finishUnlock() which emits unlockConfirmed(). Only then drop the overlay and let
+    // the display go back to its own power management.
     const auto unlock = [&] {
         locked = false;
         view.hide();
         qInfo("wsddm: unlocked");
         SetThreadExecutionState(ES_CONTINUOUS);
     };
-    QObject::connect(&sddm, &Sddm::loginSucceeded, &app, unlock);
+    QObject::connect(&sddm, &Sddm::unlockConfirmed, &app, unlock);
 
     // The tray icon. Left-click locks immediately; the menu also offers Edit config and
     // Quit, mirroring the archived C# tray.

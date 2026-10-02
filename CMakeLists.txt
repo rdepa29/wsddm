@@ -19,6 +19,12 @@ qt_add_executable(wsddm WIN32
     src/ThemeConfig.h
     src/UserModel.cpp
     src/UserModel.h
+    src/SessionModel.cpp
+    src/SessionModel.h
+    src/Config.cpp
+    src/Config.h
+    src/PasswordStore.cpp
+    src/PasswordStore.h
     src/Log.cpp
     src/Log.h
 )
@@ -64,9 +70,20 @@ qt_add_qml_module(wsddm
         qml/assets/avatar.jpg
         qml/assets/dino.png
         qml/assets/google-sans-flex/GoogleSansFlex.ttf
+        qml/assets/material-symbols/MaterialSymbolsRounded.ttf
 )
 
-target_link_libraries(wsddm PRIVATE Qt6::Core Qt6::Gui Qt6::Quick Qt6::Widgets)
+# The background is the user's own wallpaper captured at runtime (gitignored), so it is
+# only bundled when it is actually present; otherwise the theme's fallback colour shows.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/qml/assets/background")
+    qt6_add_resources(wsddm wsddm_background
+        PREFIX "/qt/qml/wsddm/qml/assets"
+        BASE "${CMAKE_CURRENT_SOURCE_DIR}/qml/assets"
+        FILES "${CMAKE_CURRENT_SOURCE_DIR}/qml/assets/background"
+    )
+endif()
+
+target_link_libraries(wsddm PRIVATE Qt6::Core Qt6::Gui Qt6::Quick Qt6::Widgets crypt32 advapi32)
 
 # WIN32_EXECUTABLE is set via the WIN32 argument above, so the CLI commands
 # (--set-password, --help) attach to the parent console the same way the C# build did.

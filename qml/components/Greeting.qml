@@ -39,7 +39,7 @@ Item {
         clip: true
         layer.enabled: true
 
-        AnimatedImage {
+        Image {
             id: backgroundBlur
 
             anchors.centerIn: parent
@@ -69,7 +69,7 @@ Item {
             Behavior on blur {
                 NumberAnimation {
                     duration: 400
-                    easing: Easing.InOutCubic
+                    easing.type: Easing.InOutCubic
                 }
             }
         }

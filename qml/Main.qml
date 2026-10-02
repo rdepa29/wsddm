@@ -33,7 +33,6 @@ Rectangle {
     property bool capsLockOn: false
     property bool mainCardBgBlur: config.mainCardBgBlur === "true"
     property int sessionIndex
-    // rounding stuff
     property real largeRadius: mainCard.radius
     property real midRadius: mainCard.radius / 1.4
     property real smallRadius: mainCard.radius / 2
@@ -53,12 +52,54 @@ Rectangle {
         function onLoginSucceeded() {
             root.loading = false;
             inputRect.color = config.subComponents;
+            exitAnimation.running = true;
         }
 
         target: sddm
     }
 
-    AnimatedImage {
+    // Holds, then scales up and fades out before asking the host to drop the overlay.
+    // State is restored on the next show, so every lock starts from a clean frame.
+    SequentialAnimation {
+        id: exitAnimation
+
+        running: false
+
+        PauseAnimation {
+            duration: 180
+        }
+
+        ParallelAnimation {
+            NumberAnimation {
+                target: root
+                property: "scale"
+                to: 1.05
+                duration: 380
+                easing.type: Easing.InOutCubic
+            }
+
+            NumberAnimation {
+                target: root
+                property: "opacity"
+                to: 0
+                duration: 380
+                easing.type: Easing.InOutCubic
+            }
+        }
+
+        ScriptAction {
+            script: sddm.finishUnlock()
+        }
+    }
+
+    onVisibleChanged: {
+        if (root.visible === false) {
+            root.opacity = 1;
+            root.scale = 1;
+        }
+    }
+
+    Image {
         id: background
 
         anchors.fill: parent
@@ -84,7 +125,7 @@ Rectangle {
             Behavior on opacity {
                 NumberAnimation {
                     duration: 300
-                    easing: Easing.InOutCubic
+                    easing.type: Easing.InOutCubic
                 }
             }
         }
@@ -163,7 +204,7 @@ Rectangle {
         Behavior on blur {
             NumberAnimation {
                 duration: 400
-                easing: Easing.InOutCubic
+                easing.type: Easing.InOutCubic
             }
         }
     }
@@ -381,12 +422,12 @@ Rectangle {
                     font.pointSize: 8
                     font.family: "Roboto"
                     color: config.text
-                    opacity: 0 // Its buggy rnm fix later
+                    opacity: 0
 
                     Behavior on opacity {
                         NumberAnimation {
                             duration: 300
-                            easing: Easing.InOutCubic
+                            easing.type: Easing.InOutCubic
                         }
                     }
                 }
@@ -506,7 +547,6 @@ Rectangle {
     }
 
     ComboBox {
-        // invisible just for now
         id: userPicker
 
         width: 190

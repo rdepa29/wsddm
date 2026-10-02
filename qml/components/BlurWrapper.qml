@@ -45,7 +45,7 @@ Item {
         clip: true
         layer.enabled: true
 
-        AnimatedImage {
+        Image {
             id: backgroundBlur
 
             anchors.centerIn: parent

@@ -257,7 +257,7 @@ Rectangle {
                 Behavior on width {
                     NumberAnimation {
                         duration: 150
-                        easing: Easing.OutCubic
+                        easing.type: Easing.OutCubic
                     }
                 }
 
